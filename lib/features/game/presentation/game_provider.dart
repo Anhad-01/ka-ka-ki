@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:uuid/uuid.dart';
+
 
 import '../domain/models/models.dart';
 import '../domain/services/services.dart';
@@ -107,7 +107,7 @@ class GameProvider extends ChangeNotifier {
     _roomSubscription = _roomService.watchRoom(roomCode).listen(
       (roomState) {
         if (roomState == null) {
-          _error = 'Room no longer exists';
+          _error = 'Host ended the room';
           notifyListeners();
           return;
         }
@@ -319,10 +319,7 @@ class GameProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _roomService.playAgain(
-        roomCode: roomCode,
-        gameId: const Uuid().v4(),
-      );
+      await _roomService.resetToWaiting(roomCode: roomCode);
     } catch (e) {
       _error = 'Failed to start new game: $e';
     }

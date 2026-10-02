@@ -19,6 +19,31 @@ class WaitingRoomScreen extends StatefulWidget {
 class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
   final _roomService = FirebaseRoomService();
   bool _hasReceivedInitialState = false;
+  bool _leaving = false;
+  late final Stream<RoomState?> _roomStream =
+      _roomService.watchRoom(widget.args.roomCode);
+  final Map<String, String> _knownPlayers = {};
+
+  void _notifyLeftPlayers(RoomState roomState) {
+    final current = {
+      for (final p in roomState.connectedPlayers) p.id: p.name,
+    };
+    final left = _knownPlayers.entries
+        .where((e) => !current.containsKey(e.key))
+        .map((e) => e.value)
+        .toList();
+    _knownPlayers
+      ..clear()
+      ..addAll(current);
+    if (left.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      for (final name in left) {
+        messenger.showSnackBar(SnackBar(content: Text('$name left')));
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +53,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
         automaticallyImplyLeading: false,
       ),
       body: StreamBuilder<RoomState?>(
-        stream: _roomService.watchRoom(widget.args.roomCode),
+        stream: _roomStream,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -53,16 +78,24 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
             _hasReceivedInitialState = true;
           } else if (_hasReceivedInitialState) {
             // Room was active, but now deleted -> go home
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.home, (route) => false);
-              }
-            });
-            return const Center(child: Text('Room closed'));
+            if (!_leaving) {
+              _leaving = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Host ended the room')),
+                  );
+                  Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.home, (route) => false);
+                }
+              });
+            }
+            return const Center(child: Text('Host ended the room'));
           } else {
             // Still waiting for initial data
             return const Center(child: CircularProgressIndicator());
           }
+
+          _notifyLeftPlayers(roomState);
 
           if (roomState.status == RoomStatus.playing) {
             // Game started -> go to game screen
@@ -176,6 +209,7 @@ class _WaitingRoomScreenState extends State<WaitingRoomScreen> {
                 OutlinedButton(
                   onPressed: () async {
                     final navigator = Navigator.of(context);
+                    _leaving = true;
                     try {
                       await _roomService.leaveRoom(
                         roomCode: widget.args.roomCode,

@@ -210,6 +210,12 @@ class FirebaseRoomService {
       final roomMap = Map<String, dynamic>.from(data as Map);
       final players = _asMap(roomMap['players']);
 
+      // Host leaving outside an active game ends the room for everyone.
+      if (roomMap['hostPlayerId'] == playerId &&
+          roomMap['status'] != 'PLAYING') {
+        return Transaction.success(null);
+      }
+
       // Remove the player.
       players.remove(playerId);
 
@@ -335,6 +341,31 @@ class FirebaseRoomService {
     });
 
     return result.committed;
+  }
+
+  /// Return a finished room to the waiting room (Play Again).
+  Future<void> resetToWaiting({required String roomCode}) async {
+    await _roomsRef.child(roomCode).runTransaction((data) {
+      if (data == null) return Transaction.abort();
+
+      final roomMap = Map<String, dynamic>.from(data as Map);
+      // A normal game end only marks game/status as FINISHED, while the
+      // room status may still be PLAYING.
+      final game = roomMap['game'];
+      final gameFinished = game is Map && game['status'] == 'FINISHED';
+      if (roomMap['status'] != 'FINISHED' && !gameFinished) {
+        return Transaction.abort();
+      }
+
+      final players = _asMap(roomMap['players']);
+      players.removeWhere((_, v) => v is Map && v['connected'] != true);
+
+      roomMap['players'] = players;
+      roomMap['status'] = 'WAITING';
+      roomMap.remove('game');
+
+      return Transaction.success(roomMap);
+    });
   }
 
   /// Reset the game for Play Again.

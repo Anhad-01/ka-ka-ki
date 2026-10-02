@@ -4,6 +4,7 @@ import '../../../app/routes.dart';
 import '../../../app/theme.dart';
 import '../domain/models/models.dart';
 import '../../../shared/widgets/board_cell_widget.dart';
+import '../../room/domain/models/room_state.dart';
 import 'game_provider.dart';
 
 class GameScreen extends StatefulWidget {
@@ -17,6 +18,7 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   late GameProvider _provider;
+  bool _navigating = false;
 
   @override
   void initState() {
@@ -59,8 +61,38 @@ class _GameScreenState extends State<GameScreen> {
     return ListenableBuilder(
       listenable: _provider,
       builder: (context, _) {
+        // Play Again: room was reset, go to the waiting room.
+        if (!_navigating && _provider.roomState?.status == RoomStatus.waiting) {
+          _navigating = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              Navigator.of(context).pushReplacementNamed(
+                AppRoutes.waitingRoom,
+                arguments: WaitingRoomArgs(
+                  roomCode: widget.args.roomCode,
+                  playerId: widget.args.playerId,
+                  playerName: widget.args.playerName,
+                ),
+              );
+            }
+          });
+        }
+
         // If room was destroyed, go home.
-        if (_provider.error != null && _provider.gameState == null) {
+        if (!_navigating && _provider.error == 'Host ended the room') {
+          _navigating = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Host ended the room')),
+              );
+              Navigator.of(context)
+                  .pushNamedAndRemoveUntil(AppRoutes.home, (route) => false);
+            }
+          });
+        } else if (!_navigating &&
+            _provider.error != null &&
+            _provider.gameState == null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
