@@ -1,0 +1,46 @@
+{
+  "rules": {
+    "rooms": {
+      "$roomCode": {
+        // Room can be read if it exists
+        ".read": true,
+        // Allow creating a new room or updating existing room
+        ".write": true,
+        "status": {
+          ".validate": "newData.val() == 'WAITING' || newData.val() == 'PLAYING' || newData.val() == 'FINISHED'"
+        },
+        "players": {
+          "$playerId": {
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 20"
+            },
+            "connected": {
+              ".validate": "newData.isBoolean()"
+            }
+          }
+        },
+        "game": {
+          "status": {
+            ".validate": "newData.val() == 'PLAYING' || newData.val() == 'FINISHED'"
+          },
+          "currentPlayerIndex": {
+            ".validate": "newData.isNumber() && newData.val() >= 0"
+          },
+          "turnStartedAt": {
+            ".validate": "newData.isNumber()"
+          },
+          "board": {
+            "$cellIndex": {
+              ".validate": "newData.val() == 'EMPTY' || newData.val() == 'SQUARE' || newData.val() == 'PENTAGON' || newData.val() == 'CIRCLE'"
+            }
+          },
+          "scores": {
+            "$playerId": {
+              ".validate": "newData.isNumber() && (!data.exists() || newData.val() >= data.val())"
+            }
+          }
+        }
+      }
+    }
+  }
+}
