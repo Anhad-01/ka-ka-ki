@@ -34,12 +34,15 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
 
   Future<void> _joinRoom() async {
     if (!_formKey.currentState!.validate()) return;
+    FocusManager.instance.primaryFocus?.unfocus();
 
     setState(() => _isLoading = true);
 
     try {
       final playerName = _nameController.text.trim();
-      final roomCode = _codeController.text.trim().toUpperCase();
+      final roomCode = _codeController.text
+                .replaceAll(RegExp(r'\s'), '')
+                .toUpperCase();
       
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('last_player_name', playerName);
@@ -111,6 +114,9 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
                 controller: _codeController,
                 maxLength: 5,
                 textCapitalization: TextCapitalization.characters,
+                autocorrect: false,
+                enableSuggestions: false,
+                keyboardType: TextInputType.visiblePassword,
                 inputFormatters: [
                   UpperCaseTextFormatter(),
                 ],
@@ -122,7 +128,7 @@ class _JoinRoomScreenState extends State<JoinRoomScreen> {
                   if (value == null || value.trim().isEmpty) {
                     return 'Please enter room code';
                   }
-                  if (value.trim().length != 5) {
+                  if (value.replaceAll(RegExp(r'\s'), '').length != 5) {
                     return 'Code must be 5 characters';
                   }
                   return null;

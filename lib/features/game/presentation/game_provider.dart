@@ -27,6 +27,10 @@ class GameProvider extends ChangeNotifier {
   int _countdown = 30;
 
   StreamSubscription? _roomSubscription;
+  StreamSubscription? _gameSubscription;
+  StreamSubscription? _offsetSubscription;
+  int _serverOffset = 0;
+  bool _advancing = false;
 
   GameProvider({
     required this.roomCode,
@@ -92,6 +96,14 @@ class GameProvider extends ChangeNotifier {
   // ── Firebase Listening ───────────────────────────────────────
 
   void _startListening() {
+    _offsetSubscription = FirebaseDatabase.instanceFor(
+      app: FirebaseDatabase.instance.app,
+      databaseURL:
+          'https://ka-ka-ki-default-rtdb.asia-southeast1.firebasedatabase.app',
+    ).ref('.info/serverTimeOffset').onValue.listen((event) {
+      final v = event.snapshot.value;
+      if (v is num) _serverOffset = v.toInt();
+    });
     _roomSubscription = _roomService.watchRoom(roomCode).listen(
       (roomState) {
         if (roomState == null) {
@@ -102,9 +114,10 @@ class GameProvider extends ChangeNotifier {
 
         _roomState = roomState;
 
-        // Parse game state if game is playing or finished.
-        if (roomState.status == RoomStatus.playing ||
-            roomState.status == RoomStatus.finished) {
+        // Listen to game state once the game is playing or finished.
+        if (_gameSubscription == null &&
+            (roomState.status == RoomStatus.playing ||
+                roomState.status == RoomStatus.finished)) {
           _parseGameState();
         }
 
@@ -125,11 +138,16 @@ class GameProvider extends ChangeNotifier {
       databaseURL: 'https://ka-ka-ki-default-rtdb.asia-southeast1.firebasedatabase.app',
     );
     final gameRef = db.ref('rooms/$roomCode/game');
-    gameRef.onValue.listen((event) {
+    _gameSubscription = gameRef.onValue.listen((event) {
       if (!event.snapshot.exists || event.snapshot.value == null) return;
 
-      final data = Map<String, dynamic>.from(event.snapshot.value as Map);
-      _gameState = GameState.fromJson(data);
+      try {
+        final data = _toStringMap(event.snapshot.value);
+        _gameState = GameState.fromJson(data);
+      } catch (e) {
+        debugPrint('Failed to parse game state: $e');
+        return;
+      }
 
       // Update countdown timer.
       _updateCountdown();
@@ -144,12 +162,17 @@ class GameProvider extends ChangeNotifier {
     if (_gameState == null || _gameState!.status != GameStatus.playing) return;
 
     _turnTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      final elapsed = DateTime.now().millisecondsSinceEpoch - _gameState!.turnStartedAt;
+      final elapsed = DateTime.now().millisecondsSinceEpoch +
+          _serverOffset -
+          _gameState!.turnStartedAt;
       final remaining = 30 - (elapsed ~/ 1000);
       _countdown = remaining.clamp(0, 30);
 
-      if (_countdown <= 0 && isMyTurn) {
-        // Timer expired on our turn — advance the turn.
+      // Any client may advance an expired turn (guarded by turnStartedAt
+      // in the transaction). Non-current players wait a short grace period
+      // so the current player's client normally does it.
+      final grace = isMyTurn ? 0 : 3;
+      if (remaining <= -grace && _countdown <= 0) {
         _handleTurnTimeout();
       }
 
@@ -158,8 +181,8 @@ class GameProvider extends ChangeNotifier {
   }
 
   Future<void> _handleTurnTimeout() async {
-    if (_gameState == null) return;
-    _turnTimer?.cancel();
+    if (_gameState == null || _advancing) return;
+    _advancing = true;
 
     try {
       await _roomService.advanceTurn(
@@ -167,8 +190,9 @@ class GameProvider extends ChangeNotifier {
         expectedTurnStartedAt: _gameState!.turnStartedAt,
       );
     } catch (e) {
-      // Another client may have already advanced the turn.
       debugPrint('Turn advance failed: $e');
+    } finally {
+      _advancing = false;
     }
   }
 
@@ -215,8 +239,7 @@ class GameProvider extends ChangeNotifier {
     GameAction action,
   ) {
     // Parse board from game data.
-    final boardData = Map<String, dynamic>.from(gameData['board'] as Map);
-    final board = Board.fromJson(boardData);
+    final board = Board.fromJson(gameData['board']);
 
     // Validate the action.
     if (!MoveValidator.isValidAction(board, action)) {
@@ -241,9 +264,9 @@ class GameProvider extends ChangeNotifier {
     );
 
     // Update scores.
-    final scores = Map<String, dynamic>.from(gameData['scores'] as Map);
+    final scores = _toStringMap(gameData['scores']);
     final currentIndex = gameData['currentPlayerIndex'] as int;
-    final turnOrder = Map<String, dynamic>.from(gameData['turnOrder'] as Map);
+    final turnOrder = _toStringMap(gameData['turnOrder']);
     final currentPlayerId = turnOrder[currentIndex.toString()] as String;
     scores[currentPlayerId] = ((scores[currentPlayerId] as num?)?.toInt() ?? 0) + newPoints;
 
@@ -263,6 +286,18 @@ class GameProvider extends ChangeNotifier {
     }
 
     return gameData;
+  }
+
+  /// Firebase may return Maps with sequential int keys as Lists.
+  static Map<String, dynamic> _toStringMap(dynamic raw) {
+    if (raw is Map) return raw.map((k, v) => MapEntry(k.toString(), v));
+    if (raw is List) {
+      return {
+        for (var i = 0; i < raw.length; i++)
+          if (raw[i] != null) i.toString(): raw[i],
+      };
+    }
+    return {};
   }
 
   /// Leave the current room.
@@ -302,6 +337,8 @@ class GameProvider extends ChangeNotifier {
   void dispose() {
     _turnTimer?.cancel();
     _roomSubscription?.cancel();
+    _gameSubscription?.cancel();
+    _offsetSubscription?.cancel();
     super.dispose();
   }
 }

@@ -21,6 +21,24 @@ class FirebaseRoomService {
 
   DatabaseReference get _roomsRef => _db.ref('rooms');
 
+  /// Active presence listeners keyed by `roomCode/playerId`.
+  static final Map<String, StreamSubscription<DatabaseEvent>> _presenceSubs = {};
+
+  /// Firebase turns maps with sequential integer keys into Lists, so
+  /// normalise either shape into a `Map<String, dynamic>`.
+  static Map<String, dynamic> _asMap(dynamic raw) {
+    if (raw is Map) {
+      return raw.map((k, v) => MapEntry(k.toString(), v));
+    }
+    if (raw is List) {
+      return {
+        for (var i = 0; i < raw.length; i++)
+          if (raw[i] != null) i.toString(): raw[i],
+      };
+    }
+    return {};
+  }
+
   /// Create a new room and return the room code.
   Future<String> createRoom({
     required String playerId,
@@ -66,53 +84,28 @@ class FirebaseRoomService {
     required String playerId,
     required String playerName,
   }) async {
-    final roomRef = _roomsRef.child(roomCode);
+    final roomRef = _roomsRef.child(roomCode.trim().toUpperCase());
 
-    final result = await roomRef.runTransaction((data) {
-      if (data == null) {
-        return Transaction.abort();
-      }
-
-      final roomMap = Map<String, dynamic>.from(data as Map);
-      final status = roomMap['status'] as String?;
-
-      if (status != 'WAITING') {
-        return Transaction.abort();
-      }
-
-      final players = roomMap['players'] as Map? ?? {};
-      if (players.length >= 6) {
-        return Transaction.abort();
-      }
-
-      // Add the new player.
-      players[playerId] = {
-        'name': playerName,
-        'connected': true,
-        'joinedAt': ServerValue.timestamp,
-      };
-      roomMap['players'] = players;
-
-      return Transaction.success(roomMap);
-    });
-
-    if (!result.committed) {
-      // Determine the specific error.
-      final snapshot = await roomRef.get();
-      if (!snapshot.exists) {
-        throw Exception('Room not found');
-      }
-      final data = Map<String, dynamic>.from(snapshot.value as Map);
-      final status = data['status'] as String?;
-      if (status != 'WAITING') {
-        throw Exception('Game already started');
-      }
-      final players = data['players'] as Map? ?? {};
-      if (players.length >= 6) {
-        throw Exception('Room is full');
-      }
-      throw Exception('Failed to join room');
+    // Read from the server first (transactions may be handed a null local
+    // cache, which would wrongly abort the join).
+    final snapshot = await roomRef.get();
+    if (!snapshot.exists || snapshot.value == null) {
+      throw Exception('Room not found');
     }
+    final data = _asMap(snapshot.value);
+    if (data['status'] != 'WAITING') {
+      throw Exception('Game already started');
+    }
+    final players = _asMap(data['players']);
+    if (players.length >= 6 && !players.containsKey(playerId)) {
+      throw Exception('Room is full');
+    }
+
+    await roomRef.child('players/$playerId').set({
+      'name': playerName,
+      'connected': true,
+      'joinedAt': ServerValue.timestamp,
+    });
 
     _setupPresence(roomCode, playerId);
   }
@@ -215,7 +208,7 @@ class FirebaseRoomService {
       if (data == null) return Transaction.abort();
 
       final roomMap = Map<String, dynamic>.from(data as Map);
-      final players = Map<String, dynamic>.from(roomMap['players'] as Map? ?? {});
+      final players = _asMap(roomMap['players']);
 
       // Remove the player.
       players.remove(playerId);
@@ -236,8 +229,8 @@ class FirebaseRoomService {
       // If game is playing and we need to handle turn order.
       if (roomMap['game'] != null) {
         final game = Map<String, dynamic>.from(roomMap['game'] as Map);
-        final turnOrder = Map<String, dynamic>.from(game['turnOrder'] as Map? ?? {});
-        final scores = Map<String, dynamic>.from(game['scores'] as Map? ?? {});
+        final turnOrder = _asMap(game['turnOrder']);
+        final scores = _asMap(game['scores']);
 
         // Remove from scores.
         scores.remove(playerId);
@@ -279,14 +272,29 @@ class FirebaseRoomService {
       return Transaction.success(roomMap);
     });
 
-    // Cancel disconnect handler.
+    // Stop presence tracking and cancel disconnect handler.
+    _presenceSubs.remove('$roomCode/$playerId')?.cancel();
     _roomsRef.child('$roomCode/players/$playerId/connected').onDisconnect().cancel();
   }
 
-  /// Set up Firebase presence for a player.
+  /// Keep a player's presence in sync with the Firebase connection.
+  ///
+  /// Whenever the client (re)connects, re-arm the onDisconnect handler and
+  /// mark the player as connected again. This covers the app being
+  /// backgrounded (e.g. sharing the room code) and then resumed.
   void _setupPresence(String roomCode, String playerId) {
+    final key = '$roomCode/$playerId';
+    _presenceSubs.remove(key)?.cancel();
     final connectedRef = _roomsRef.child('$roomCode/players/$playerId/connected');
-    connectedRef.onDisconnect().set(false);
+    _presenceSubs[key] = _db.ref('.info/connected').onValue.listen((event) async {
+      if (event.snapshot.value != true) return;
+      try {
+        await connectedRef.onDisconnect().set(false);
+        await connectedRef.set(true);
+      } catch (_) {
+        // Player may have left / room removed.
+      }
+    });
   }
 
   /// Perform a game action (place, flip, or move).
@@ -304,7 +312,7 @@ class FirebaseRoomService {
       final gameMap = Map<String, dynamic>.from(data as Map);
 
       // Verify it's this player's turn.
-      final turnOrder = Map<String, dynamic>.from(gameMap['turnOrder'] as Map);
+      final turnOrder = _asMap(gameMap['turnOrder']);
       final currentIndex = gameMap['currentPlayerIndex'] as int;
       final currentPlayerId = turnOrder[currentIndex.toString()] as String?;
 
@@ -410,7 +418,7 @@ class FirebaseRoomService {
       }
 
       // Advance to next player.
-      final turnOrder = Map<String, dynamic>.from(gameMap['turnOrder'] as Map);
+      final turnOrder = _asMap(gameMap['turnOrder']);
       var currentIndex = gameMap['currentPlayerIndex'] as int;
       currentIndex = (currentIndex + 1) % turnOrder.length;
 
