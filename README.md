@@ -1,10 +1,10 @@
-# ka-kā-ki (का-का-की) 🎮
+# ka-kā-ki (का-का-की)
 
 A real-time multiplayer shape-sequence game for Android built with **Flutter** and **Firebase Realtime Database**. 2–6 players connect using short 5-character room codes to compete on a 3×3 grid.
 
 ---
 
-## 🎲 Game Rules Summary
+## Game Rules Summary
 
 - **Board:** 3×3 grid with 9 cells.
 - **Turn Time:** 30 seconds per turn. If a player runs out of time, their turn is automatically skipped.
